@@ -1,15 +1,15 @@
 const express = require('express');
-const mysql = require('mysql2/promise'); // Use promise-based mysql2
+const mysql = require('mysql2/promise');
 const cors = require('cors');
 const dotenv = require('dotenv');
 
-dotenv.config(); // Load environment variables from .env
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection Pool using .env variables
+// MySQL Connection Pool
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -17,13 +17,13 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     port: process.env.DB_PORT || 3306,
     waitForConnections: true,
-    connectionLimit: 5, // Enough for 4-5 bookings/day
+    connectionLimit: 5,
     queueLimit: 0,
-    connectTimeout: 10000, // 10 seconds
-    idleTimeout: 60000 // 60 seconds
+    connectTimeout: 10000,
+    idleTimeout: 60000
 });
 
-// Test connection on startup
+// Test connection
 pool.getConnection()
     .then(conn => {
         console.log('MySQL connected');
@@ -39,7 +39,7 @@ pool.on('error', err => {
     }
 });
 
-// Query with retry logic
+// Query with retry
 async function queryWithRetry(sql, params, retries = 3) {
     while (retries > 0) {
         try {
@@ -49,13 +49,18 @@ async function queryWithRetry(sql, params, retries = 3) {
             console.error('Query error:', err);
             if (err.message.includes('closed state') && retries > 1) {
                 retries--;
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 continue;
             }
             throw err;
         }
     }
 }
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', uptime: process.uptime() });
+});
 
 // API to create a booking
 app.post('/api/bookings', async (req, res) => {
@@ -74,7 +79,7 @@ app.post('/api/bookings', async (req, res) => {
     }
 });
 
-// API to get all bookings (for Profile Page)
+// API to get all bookings
 app.get('/api/bookings', async (req, res) => {
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
@@ -107,7 +112,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
     }
 });
 
-// API to get bookings by date, month, year, and branch (for Sales Page)
+// API to get bookings by date, month, year, branch
 app.get('/api/bookings/filter', async (req, res) => {
     const { date, month, year, branch } = req.query;
     let query = `
@@ -141,7 +146,7 @@ app.get('/api/bookings/filter', async (req, res) => {
     }
 });
 
-// API to get notifications for admin (next day bookings)
+// API to get notifications
 app.get('/api/notifications', async (req, res) => {
     const isAdmin = req.query.admin === 'true';
     if (!isAdmin) {
@@ -193,7 +198,17 @@ setInterval(async () => {
     } catch (err) {
         console.error('Ping error:', err);
     }
-}, 300000); // Every 5 minutes
+}, 300000);
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('Received SIGTERM. Shutting down...');
+    pool.end(err => {
+        if (err) console.error('Error closing pool:', err);
+        else console.log('MySQL pool closed');
+        process.exit(0);
+    });
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
