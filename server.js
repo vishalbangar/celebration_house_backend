@@ -1,5 +1,5 @@
 const express = require('express');
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise'); // Use promise-based mysql2
 const cors = require('cors');
 const dotenv = require('dotenv');
 
@@ -9,41 +9,73 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection using .env variables
-const db = mysql.createConnection({
+// MySQL Connection Pool using .env variables
+const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
+    database: process.env.DB_NAME,
+    port: process.env.DB_PORT || 3306,
+    waitForConnections: true,
+    connectionLimit: 5, // Enough for 4-5 bookings/day
+    queueLimit: 0,
+    connectTimeout: 10000, // 10 seconds
+    idleTimeout: 60000 // 60 seconds
 });
 
-db.connect(err => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
+// Test connection on startup
+pool.getConnection()
+    .then(conn => {
+        console.log('MySQL connected');
+        conn.release();
+    })
+    .catch(err => console.error('MySQL connection error:', err));
+
+// Handle pool errors
+pool.on('error', err => {
+    console.error('Pool error:', err);
+    if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+        console.log('Reconnecting...');
     }
-    console.log('Connected to MySQL database');
 });
+
+// Query with retry logic
+async function queryWithRetry(sql, params, retries = 3) {
+    while (retries > 0) {
+        try {
+            const [rows] = await pool.query(sql, params);
+            return rows;
+        } catch (err) {
+            console.error('Query error:', err);
+            if (err.message.includes('closed state') && retries > 1) {
+                retries--;
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+                continue;
+            }
+            throw err;
+        }
+    }
+}
 
 // API to create a booking
-app.post('/api/bookings', (req, res) => {
+app.post('/api/bookings', async (req, res) => {
     const { uniqueId, customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount } = req.body;
     const query = `
         INSERT INTO bookings (uniqueId, customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
-    db.query(query, [uniqueId, customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount], (err, result) => {
-        if (err) {
-            console.error('Error creating booking:', err);
-            res.status(500).json({ error: 'Error creating booking' });
-            return;
-        }
+    try {
+        await queryWithRetry(query, [uniqueId, customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
+        console.log('Booking created:', uniqueId);
         res.status(201).json({ message: 'Booking created successfully', bookingId: uniqueId });
-    });
+    } catch (err) {
+        console.error('Error creating booking:', err);
+        res.status(500).json({ error: 'Error creating booking' });
+    }
 });
 
 // API to get all bookings (for Profile Page)
-app.get('/api/bookings', (req, res) => {
+app.get('/api/bookings', async (req, res) => {
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
@@ -51,32 +83,32 @@ app.get('/api/bookings', (req, res) => {
                branch, selectedPackage, amount 
         FROM bookings
     `;
-    db.query(query, (err, results) => {
-        if (err) {
-            console.error('Error fetching bookings:', err);
-            res.status(500).json({ error: 'Error fetching bookings' });
-            return;
-        }
+    try {
+        const results = await queryWithRetry(query);
+        console.log('Bookings fetched:', results.length);
         res.json(results);
-    });
+    } catch (err) {
+        console.error('Error fetching bookings:', err);
+        res.status(500).json({ error: 'Error fetching bookings' });
+    }
 });
 
 // API to delete a booking
-app.delete('/api/bookings/:id', (req, res) => {
+app.delete('/api/bookings/:id', async (req, res) => {
     const { id } = req.params;
     const query = 'DELETE FROM bookings WHERE id = ?';
-    db.query(query, [id], (err, result) => {
-        if (err) {
-            console.error('Error deleting booking:', err);
-            res.status(500).json({ error: 'Error deleting booking' });
-            return;
-        }
+    try {
+        const result = await queryWithRetry(query, [id]);
+        console.log('Booking deleted:', id);
         res.json({ message: 'Booking deleted successfully' });
-    });
+    } catch (err) {
+        console.error('Error deleting booking:', err);
+        res.status(500).json({ error: 'Error deleting booking' });
+    }
 });
 
 // API to get bookings by date, month, year, and branch (for Sales Page)
-app.get('/api/bookings/filter', (req, res) => {
+app.get('/api/bookings/filter', async (req, res) => {
     const { date, month, year, branch } = req.query;
     let query = `
         SELECT id, uniqueId, customerName, contactNumber, 
@@ -99,18 +131,18 @@ app.get('/api/bookings/filter', (req, res) => {
         params.push(branch);
     }
 
-    db.query(query, params, (err, results) => {
-        if (err) {
-            console.error('Error fetching filtered bookings:', err);
-            res.status(500).json({ error: 'Error fetching filtered bookings' });
-            return;
-        }
+    try {
+        const results = await queryWithRetry(query, params);
+        console.log('Filtered bookings fetched:', results.length);
         res.json(results);
-    });
+    } catch (err) {
+        console.error('Error fetching filtered bookings:', err);
+        res.status(500).json({ error: 'Error fetching filtered bookings' });
+    }
 });
 
 // API to get notifications for admin (next day bookings)
-app.get('/api/notifications', (req, res) => {
+app.get('/api/notifications', async (req, res) => {
     const isAdmin = req.query.admin === 'true';
     if (!isAdmin) {
         return res.status(403).json({ error: 'Access denied. Admin only.' });
@@ -140,18 +172,28 @@ app.get('/api/notifications', (req, res) => {
         WHERE eventDate = ?
         ORDER BY eventTime ASC
     `;
-    db.query(query, [tomorrowDate], (err, results) => {
-        if (err) {
-            console.error('Error fetching notifications:', err);
-            res.status(500).json({ error: 'Error fetching notifications' });
-            return;
-        }
+    try {
+        const results = await queryWithRetry(query, [tomorrowDate]);
+        console.log('Notifications fetched:', results.length);
         res.json({
             message: `Bookings for tomorrow (${tomorrowFormatted})`,
             bookings: results
         });
-    });
+    } catch (err) {
+        console.error('Error fetching notifications:', err);
+        res.status(500).json({ error: 'Error fetching notifications' });
+    }
 });
+
+// Keep connections alive
+setInterval(async () => {
+    try {
+        await pool.query('SELECT 1');
+        console.log('Pinged MySQL');
+    } catch (err) {
+        console.error('Ping error:', err);
+    }
+}, 300000); // Every 5 minutes
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
