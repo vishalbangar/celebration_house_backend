@@ -17,9 +17,9 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     port: process.env.DB_PORT || 3306,
     waitForConnections: true,
-    connectionLimit: 5,
+    connectionLimit: 3, // Reduced for stability
     queueLimit: 0,
-    connectTimeout: 10000,
+    connectTimeout: 20000, // Increased to 20s
     idleTimeout: 60000
 });
 
@@ -58,8 +58,15 @@ async function queryWithRetry(sql, params, retries = 3) {
 }
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'OK', uptime: process.uptime() });
+app.get('/health', async (req, res) => {
+    try {
+        await pool.query('SELECT 1'); // Quick DB ping
+        console.log('Health check OK');
+        res.status(200).json({ status: 'OK', uptime: process.uptime() });
+    } catch (err) {
+        console.error('Health check failed:', err);
+        res.status(500).json({ status: 'ERROR', error: err.message });
+    }
 });
 
 // API to create a booking
@@ -203,14 +210,16 @@ setInterval(async () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('Received SIGTERM. Shutting down...');
-    pool.end(err => {
-        if (err) console.error('Error closing pool:', err);
-        else console.log('MySQL pool closed');
-        process.exit(0);
+    server.close(() => {
+        pool.end(err => {
+            if (err) console.error('Error closing pool:', err);
+            else console.log('MySQL pool closed');
+            process.exit(0);
+        });
     });
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
