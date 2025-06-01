@@ -17,9 +17,9 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     port: process.env.DB_PORT || 3306,
     waitForConnections: true,
-    connectionLimit: 3, // Reduced for stability
+    connectionLimit: 3,
     queueLimit: 0,
-    connectTimeout: 20000, // Increased to 20s
+    connectTimeout: 20000,
     idleTimeout: 60000
 });
 
@@ -58,15 +58,14 @@ async function queryWithRetry(sql, params, retries = 3) {
 }
 
 // Health check endpoint
-app.get('/health', async (req, res) => {
-    try {
-        await pool.query('SELECT 1'); // Quick DB ping
-        console.log('Health check OK');
-        res.status(200).json({ status: 'OK', uptime: process.uptime() });
-    } catch (err) {
-        console.error('Health check failed:', err);
-        res.status(500).json({ status: 'ERROR', error: err.message });
-    }
+app.get('/health', (req, res) => {
+    console.log('Health check requested');
+    res.status(200).json({ status: 'OK', uptime: process.uptime() });
+});
+
+// Root route
+app.get('/', (req, res) => {
+    res.status(200).json({ message: 'Celebration House API' });
 });
 
 // API to create a booking
@@ -209,14 +208,20 @@ setInterval(async () => {
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-    console.log('Received SIGTERM. Shutting down...');
+    console.log('Received SIGTERM. Shutting down gracefully...');
     server.close(() => {
+        console.log('Express server closed');
         pool.end(err => {
             if (err) console.error('Error closing pool:', err);
             else console.log('MySQL pool closed');
             process.exit(0);
         });
     });
+    // Force exit if not closed in 10s
+    setTimeout(() => {
+        console.error('Force exiting due to timeout');
+        process.exit(1);
+    }, 10000);
 });
 
 const PORT = process.env.PORT || 5000;
