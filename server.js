@@ -46,7 +46,7 @@ async function queryWithRetry(sql, params, retries = 3) {
     while (retries > 0) {
         try {
             const [rows] = await pool.query(sql, params);
-            return rows;
+            return rows || []; // Ensure array return
         } catch (err) {
             console.error('Query error:', err);
             if (err.message.includes('closed state') && retries > 1) {
@@ -57,6 +57,7 @@ async function queryWithRetry(sql, params, retries = 3) {
             throw err;
         }
     }
+    return []; // Fallback empty array
 }
 
 // Test route
@@ -90,7 +91,7 @@ app.post('/api/bookings', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     try {
-        const [result] = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
+        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
         const bookingId = String(result.insertId).padStart(5, '0');
         await queryWithRetry('UPDATE bookings SET uniqueId = ? WHERE id = ?', [bookingId, result.insertId]);
         console.log('Booking created:', bookingId);
@@ -106,15 +107,15 @@ app.get('/api/bookings', async (req, res) => {
     console.log('GET /api/bookings');
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
-               DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               eventTime, 
+               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
+               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
                branch, selectedPackage, amount 
         FROM bookings
     `;
     try {
         const bookings = await queryWithRetry(query);
         console.log('Bookings fetched:', bookings.length);
-        res.json(bookings);
+        res.status(200).json(bookings);
     } catch (err) {
         console.error('Error fetching bookings:', err);
         res.status(500).json({ error: 'Error fetching bookings: ' + err.message });
@@ -127,20 +128,20 @@ app.get('/api/bookings/:id', async (req, res) => {
     console.log(`GET /api/bookings/${id}`);
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
-               DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               eventTime, 
+               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
+               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
                branch, selectedPackage, amount 
         FROM bookings 
         WHERE id = ?
     `;
     try {
-        const [results] = await queryWithRetry(query, [id]);
-        if (results.length === 0) {
-            console.error('Booking not found: ', id);
+        const results = await queryWithRetry(query, [id]);
+        if (!results || results.length === 0) {
+            console.error('Booking not found:', id);
             return res.status(404).json({ error: 'Booking not found' });
         }
         console.log('Booking fetched:', id);
-        res.json(results[0]);
+        res.status(200).json(results[0]);
     } catch (err) {
         console.error('Error fetching booking:', err);
         res.status(500).json({ error: 'Error fetching booking: ' + err.message });
@@ -159,7 +160,7 @@ app.put('/api/bookings/:id', async (req, res) => {
     }
 
     if (!/^[0-9]{10}$/.test(contactNumber)) {
-        console.error('Invalid number:', contactNumber);
+        console.error('Invalid contact number:', contactNumber);
         return res.status(400).json({ error: 'Invalid contact number: Must be 10 digits' });
     }
 
@@ -168,9 +169,13 @@ app.put('/api/bookings/:id', async (req, res) => {
         return res.status(400).json({ error: 'Invalid date format: Use YYYY-MM-DD' });
     }
 
-    if (!/^\d{2}:\d{2}$/.test(eventTime)) {
+    // Normalize time format (accept HH:MM or HH:MM:SS)
+    let normalizedTime = eventTime;
+    if (/^\d{2}:\d{2}:\d{2}$/.test(eventTime)) {
+        normalizedTime = eventTime.slice(0, 5); // Convert HH:MM:SS to HH:MM
+    } else if (!/^\d{2}:\d{2}$/.test(eventTime)) {
         console.error('Invalid time format:', eventTime);
-        return res.status(400).json({ error: 'Invalid time format: Use HH:MM' });
+        return res.status(400).json({ error: 'Invalid time format: Use HH:MM or HH:MM:SS' });
     }
 
     const query = `
@@ -180,15 +185,15 @@ app.put('/api/bookings/:id', async (req, res) => {
         WHERE id = ?
     `;
     try {
-        const [result] = await queryWithRetry(query, [
-            customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, id
+        const result = await queryWithRetry(query, [
+            customerName, contactNumber, eventDate, normalizedTime, branch, selectedPackage, amount, id
         ]);
-        if (result.affectedRows === 0) {
+        if (!result || result.affectedRows === 0) {
             console.error('Booking not found:', id);
             return res.status(404).json({ error: 'Booking not found' });
         }
         console.log('Booking updated:', id);
-        res.json({ message: 'Booking updated' });
+        res.status(200).json({ message: 'Booking updated' });
     } catch (err) {
         console.error('Error updating booking:', err);
         res.status(500).json({ error: 'Error updating booking: ' + err.message });
@@ -201,13 +206,13 @@ app.delete('/api/bookings/:id', async (req, res) => {
     console.log(`DELETE /api/bookings/${id}`);
     const query = 'DELETE FROM bookings WHERE id = ?';
     try {
-        const [result] = await queryWithRetry(query, [id]);
-        if (result.affectedRows === 0) {
+        const result = await queryWithRetry(query, [id]);
+        if (!result || result.affectedRows === 0) {
             console.error('Booking not found:', id);
             return res.status(404).json({ error: 'Booking not found' });
         }
         console.log('Booking deleted:', id);
-        res.json({ message: 'Booking deleted' });
+        res.status(200).json({ message: 'Booking deleted' });
     } catch (err) {
         console.error('Error deleting booking:', err);
         res.status(500).json({ error: 'Error deleting booking: ' + err.message });
@@ -221,8 +226,8 @@ app.get('/api/bookings/filter', async (req, res) => {
 
     let query = `
         SELECT id, uniqueId, customerName, contactNumber, 
-               DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               eventTime, 
+               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
+               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
                branch, selectedPackage, amount 
         FROM bookings 
         WHERE 1=1
@@ -251,10 +256,12 @@ app.get('/api/bookings/filter', async (req, res) => {
         params.push(branch);
     }
 
+    console.log('Executing filter query:', query, 'Params:', params);
+
     try {
         const results = await queryWithRetry(query, params);
         console.log('Filtered bookings fetched:', results.length);
-        res.json(results);
+        res.status(200).json(results);
     } catch (err) {
         console.error('Error fetching filtered bookings:', err);
         res.status(500).json({ error: 'Error fetching filtered bookings: ' + err.message });
@@ -274,30 +281,29 @@ app.get('/api/notifications', async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = tomorrow.toISOString().split('T')[0];
 
-    const formatDate = (date) => {
+    const formatDateForResponse = (date) => {
         const day = String(date.getDate()).padStart(2, '0');
         const month = String(date.getMonth() + 1).padStart(2, '0');
-        const yyyy = date.getFullYear();
-        return `${day}-${month}-${yyyy}`;
+        const year = date.getFullYear();
+        return `${day}-${month}-${year}`;
     };
-    const tomorrowFormatted = formatDate(tomorrow);
+    const tomorrowFormatted = formatDateForResponse(tomorrow);
 
     const query = `
-        SELECT 
-            id, uniqueId, customerName, contactNumber, 
-            DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-            eventTime, 
-            branch, selectedPackage, amount 
+        SELECT id, uniqueId, customerName, contactNumber, 
+               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
+               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
+               branch, selectedPackage, amount 
         FROM bookings 
         WHERE eventDate = ?
-        ORDER BY id
+        ORDER BY eventTime ASC
     `;
     try {
         const results = await queryWithRetry(query, [tomorrowDate]);
         console.log('Notifications fetched:', results.length);
-        res.json({
+        res.status(200).json({
             message: `Bookings for tomorrow (${tomorrowFormatted})`,
-            bookings: results 
+            bookings: results
         });
     } catch (err) {
         console.error('Error fetching notifications:', err);
@@ -324,21 +330,25 @@ setInterval(async () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
     console.log('SIGTERM received. Shutting down...');
-    server.close(() => {
-        console.log('Server closed');
-        pool.end(err => {
-            if (err) console.error('Pool close error:', err);
-            console.log('Pool closed');
-            process.exit(0);
+    const server = app.get('server');
+    if (server) {
+        server.close(() => {
+            console.log('Server closed');
+            pool.end(err => {
+                if (err) console.error('Pool close error:', err);
+                console.log('Pool closed');
+                process.exit(0);
+            });
         });
-    });
+    }
     setTimeout(() => {
         console.error('Force shutdown');
         process.exit(1);
     }, 10000);
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
+app.set('server', server);
