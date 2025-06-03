@@ -45,8 +45,10 @@ pool.on('error', err => {
 async function queryWithRetry(sql, params, retries = 3) {
     while (retries > 0) {
         try {
-            const [rows] = await pool.query(sql, params);
-            return rows || []; // Ensure array return
+            const result = await pool.query(sql, params);
+            // For SELECT: result[0] is rows array
+            // For INSERT/UPDATE/DELETE: result[0] is { affectedRows, insertId, ... }
+            return Array.isArray(result[0]) ? result[0] : result[0]; // Handle both cases
         } catch (err) {
             console.error('Query error:', err);
             if (err.message.includes('closed state') && retries > 1) {
@@ -57,7 +59,7 @@ async function queryWithRetry(sql, params, retries = 3) {
             throw err;
         }
     }
-    return []; // Fallback empty array
+    return Array.isArray(sql.toLowerCase().includes('select')) ? [] : { affectedRows: 0 }; // Fallback
 }
 
 // Test route
@@ -169,10 +171,10 @@ app.put('/api/bookings/:id', async (req, res) => {
         return res.status(400).json({ error: 'Invalid date format: Use YYYY-MM-DD' });
     }
 
-    // Normalize time format (accept HH:MM or HH:MM:SS)
+    // Normalize time format
     let normalizedTime = eventTime;
     if (/^\d{2}:\d{2}:\d{2}$/.test(eventTime)) {
-        normalizedTime = eventTime.slice(0, 5); // Convert HH:MM:SS to HH:MM
+        normalizedTime = eventTime.slice(0, 5); // HH:MM:SS to HH:MM
     } else if (!/^\d{2}:\d{2}$/.test(eventTime)) {
         console.error('Invalid time format:', eventTime);
         return res.status(400).json({ error: 'Invalid time format: Use HH:MM or HH:MM:SS' });
@@ -340,6 +342,12 @@ process.on('SIGTERM', () => {
                 process.exit(0);
             });
         });
+    } else {
+        pool.end(err => {
+            if (err) console.error('Pool close error:', err);
+            console.log('Pool closed');
+            process.exit(0);
+        });
     }
     setTimeout(() => {
         console.error('Force shutdown');
@@ -347,7 +355,7 @@ process.on('SIGTERM', () => {
     }, 10000);
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
