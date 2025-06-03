@@ -1,11 +1,13 @@
 {
+  "name": "celebration-house-backend",
+  "version": "1.0.0",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "express": "^4.17.1",
+    "mysql2": "^3.6.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
-    "express": "^5.1.0",
-    "mysql2": "^3.14.0"
+    "dotenv": "^16.0.3"
   }
 }
