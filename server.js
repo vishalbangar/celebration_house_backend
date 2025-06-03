@@ -90,7 +90,7 @@ app.post('/api/bookings', async (req, res) => {
         VALUES (?, ?, ?, ?, ?, ?, ?)
     `;
     try {
-        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
+        const [result] = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
         const bookingId = String(result.insertId).padStart(5, '0');
         await queryWithRetry('UPDATE bookings SET uniqueId = ? WHERE id = ?', [bookingId, result.insertId]);
         console.log('Booking created:', bookingId);
@@ -107,7 +107,7 @@ app.get('/api/bookings', async (req, res) => {
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               DATE_FORMAT(eventTime, '%H:%i') as eventTime, 
+               eventTime, 
                branch, selectedPackage, amount 
         FROM bookings
     `;
@@ -128,15 +128,15 @@ app.get('/api/bookings/:id', async (req, res) => {
     const query = `
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               DATE_FORMAT(eventTime, '%H:%i') as eventTime, 
+               eventTime, 
                branch, selectedPackage, amount 
         FROM bookings 
         WHERE id = ?
     `;
     try {
-        const results = await queryWithRetry(query, [id]);
+        const [results] = await queryWithRetry(query, [id]);
         if (results.length === 0) {
-            console.error('Booking not found:', id);
+            console.error('Booking not found: ', id);
             return res.status(404).json({ error: 'Booking not found' });
         }
         console.log('Booking fetched:', id);
@@ -159,7 +159,7 @@ app.put('/api/bookings/:id', async (req, res) => {
     }
 
     if (!/^[0-9]{10}$/.test(contactNumber)) {
-        console.error('Invalid contact number:', contactNumber);
+        console.error('Invalid number:', contactNumber);
         return res.status(400).json({ error: 'Invalid contact number: Must be 10 digits' });
     }
 
@@ -180,7 +180,7 @@ app.put('/api/bookings/:id', async (req, res) => {
         WHERE id = ?
     `;
     try {
-        const result = await queryWithRetry(query, [
+        const [result] = await queryWithRetry(query, [
             customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, id
         ]);
         if (result.affectedRows === 0) {
@@ -201,7 +201,7 @@ app.delete('/api/bookings/:id', async (req, res) => {
     console.log(`DELETE /api/bookings/${id}`);
     const query = 'DELETE FROM bookings WHERE id = ?';
     try {
-        const result = await queryWithRetry(query, [id]);
+        const [result] = await queryWithRetry(query, [id]);
         if (result.affectedRows === 0) {
             console.error('Booking not found:', id);
             return res.status(404).json({ error: 'Booking not found' });
@@ -222,7 +222,7 @@ app.get('/api/bookings/filter', async (req, res) => {
     let query = `
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               DATE_FORMAT(eventTime, '%H:%i') as eventTime, 
+               eventTime, 
                branch, selectedPackage, amount 
         FROM bookings 
         WHERE 1=1
@@ -239,21 +239,21 @@ app.get('/api/bookings/filter', async (req, res) => {
     } else if (month && year) {
         const monthNum = parseInt(month);
         const yearNum = parseInt(year);
-        if (isNaN(monthNum) || monthNum < 1 || monthNum > 12 || isNaN(yearNum) || yearNum < 2000) {
+        if (isNaN(monthNum) || monthNum < 1 || monthNum > 12 || isNaN(yearNum) || yearNum < 1000) {
             console.error('Invalid month/year:', { month, year });
             return res.status(400).json({ error: 'Invalid month or year' });
         }
         query += ' AND MONTH(eventDate) = ? AND YEAR(eventDate) = ?';
         params.push(monthNum, yearNum);
     }
-    if (branch) {
+    if (branch && branch !== 'All') {
         query += ' AND branch = ?';
         params.push(branch);
     }
 
     try {
         const results = await queryWithRetry(query, params);
-        console.log('Filtered bookings:', results.length);
+        console.log('Filtered bookings fetched:', results.length);
         res.json(results);
     } catch (err) {
         console.error('Error fetching filtered bookings:', err);
@@ -274,29 +274,30 @@ app.get('/api/notifications', async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowDate = tomorrow.toISOString().split('T')[0];
 
-    const formatDateForResponse = (date) => {
+    const formatDate = (date) => {
         const day = String(date.getDate()).padStart(2, '0');
         const month = String(date.getMonth() + 1).padStart(2, '0');
-        const year = date.getFullYear();
-        return `${day}-${month}-${year}`;
+        const yyyy = date.getFullYear();
+        return `${day}-${month}-${yyyy}`;
     };
-    const tomorrowFormatted = formatDateForResponse(tomorrow);
+    const tomorrowFormatted = formatDate(tomorrow);
 
     const query = `
-        SELECT id, uniqueId, customerName, contactNumber, 
-               DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
-               DATE_FORMAT(eventTime, '%H:%i') as eventTime, 
-               branch, selectedPackage, amount 
+        SELECT 
+            id, uniqueId, customerName, contactNumber, 
+            DATE_FORMAT(eventDate, '%d-%m-%Y') as eventDate, 
+            eventTime, 
+            branch, selectedPackage, amount 
         FROM bookings 
         WHERE eventDate = ?
-        ORDER BY eventTime ASC
+        ORDER BY id
     `;
     try {
         const results = await queryWithRetry(query, [tomorrowDate]);
         console.log('Notifications fetched:', results.length);
         res.json({
             message: `Bookings for tomorrow (${tomorrowFormatted})`,
-            bookings: results
+            bookings: results 
         });
     } catch (err) {
         console.error('Error fetching notifications:', err);
@@ -337,7 +338,7 @@ process.on('SIGTERM', () => {
     }, 10000);
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
