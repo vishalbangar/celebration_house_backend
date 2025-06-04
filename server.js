@@ -46,9 +46,7 @@ async function queryWithRetry(sql, params, retries = 3) {
     while (retries > 0) {
         try {
             const result = await pool.query(sql, params);
-            // For SELECT: result[0] is rows array
-            // For INSERT/UPDATE/DELETE: result[0] is { affectedRows, insertId, ... }
-            return Array.isArray(result[0]) ? result[0] : result[0]; // Handle both cases
+            return Array.isArray(result[0]) ? result[0] : result[0];
         } catch (err) {
             console.error('Query error:', err);
             if (err.message.includes('closed state') && retries > 1) {
@@ -59,7 +57,7 @@ async function queryWithRetry(sql, params, retries = 3) {
             throw err;
         }
     }
-    return Array.isArray(sql.toLowerCase().includes('select')) ? [] : { affectedRows: 0 }; // Fallback
+    return sql.toLowerCase().includes('select') ? [] : { affectedRows: 0 };
 }
 
 // Test route
@@ -80,27 +78,56 @@ app.get('/', (req, res) => {
     res.status(200).json({ message: 'Celebration House API' });
 });
 
-// Create booking
-app.post('/api/bookings', async (req, res) => {
-    console.log('POST /api/bookings:', req.body);
-    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount } = req.body;
-    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount) {
-        console.error('Missing fields:', req.body);
-        return res.status(400).json({ error: 'All fields required' });
-    }
-    const query = `
-        INSERT INTO bookings (customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+// Filter bookings (MUST be before /api/bookings/:id)
+app.get('/api/bookings/filter', async (req, res) => {
+    console.log('GET /api/bookings/filter with query:', req.query);
+    const { date, month, year, branch } = req.query;
+
+    let query = `
+        SELECT id, uniqueId, customerName, contactNumber, 
+               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
+               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
+               branch, selectedPackage, amount 
+        FROM bookings 
+        WHERE 1=1
     `;
+    const params = [];
+
+    if (date) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            console.error('Invalid date format:', date);
+            return res.status(400).json({ error: 'Invalid date format: Use YYYY-MM-DD' });
+        }
+        query += ' AND eventDate = ?';
+        params.push(date);
+    } else if (month && year) {
+        const monthNum = parseInt(month);
+        const yearNum = parseInt(year);
+        if (isNaN(monthNum) || monthNum < 1 || monthNum > 12 || isNaN(yearNum) || yearNum < 1000) {
+            console.error('Invalid month/year:', { month, year });
+            return res.status(400).json({ error: 'Invalid month or year' });
+        }
+        query += ' AND MONTH(eventDate) = ? AND YEAR(eventDate) = ?';
+        params.push(monthNum, yearNum);
+    }
+    if (branch && branch !== 'All') {
+        query += ' AND branch = ?';
+        params.push(branch);
+    }
+
+    console.log('Executing filter query:', query, 'Params:', params);
+
     try {
-        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
-        const bookingId = String(result.insertId).padStart(5, '0');
-        await queryWithRetry('UPDATE bookings SET uniqueId = ? WHERE id = ?', [bookingId, result.insertId]);
-        console.log('Booking created:', bookingId);
-        res.status(201).json({ message: 'Booking created', bookingId });
+        const results = await queryWithRetry(query, params);
+        console.log('Filtered bookings fetched:', results.length);
+        if (results.length === 0) {
+            console.log('No bookings found for filter:', req.query);
+            return res.status(404).json({ error: 'No bookings found for the selected filters' });
+        }
+        res.status(200).json(results);
     } catch (err) {
-        console.error('Error creating booking:', err);
-        res.status(500).json({ error: 'Error creating booking: ' + err.message });
+        console.error('Error fetching filtered bookings:', err);
+        res.status(500).json({ error: 'Error fetching filtered bookings: ' + err.message });
     }
 });
 
@@ -150,6 +177,30 @@ app.get('/api/bookings/:id', async (req, res) => {
     }
 });
 
+// Create booking
+app.post('/api/bookings', async (req, res) => {
+    console.log('POST /api/bookings:', req.body);
+    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount } = req.body;
+    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount) {
+        console.error('Missing fields:', req.body);
+        return res.status(400).json({ error: 'All fields required' });
+    }
+    const query = `
+        INSERT INTO bookings (customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `;
+    try {
+        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
+        const bookingId = String(result.insertId).padStart(5, '0');
+        await queryWithRetry('UPDATE bookings SET uniqueId = ? WHERE id = ?', [bookingId, result.insertId]);
+        console.log('Booking created:', bookingId);
+        res.status(201).json({ message: 'Booking created', bookingId });
+    } catch (err) {
+        console.error('Error creating booking:', err);
+        res.status(500).json({ error: 'Error creating booking: ' + err.message });
+    }
+});
+
 // Update booking
 app.put('/api/bookings/:id', async (req, res) => {
     const { id } = req.params;
@@ -171,10 +222,9 @@ app.put('/api/bookings/:id', async (req, res) => {
         return res.status(400).json({ error: 'Invalid date format: Use YYYY-MM-DD' });
     }
 
-    // Normalize time format
     let normalizedTime = eventTime;
     if (/^\d{2}:\d{2}:\d{2}$/.test(eventTime)) {
-        normalizedTime = eventTime.slice(0, 5); // HH:MM:SS to HH:MM
+        normalizedTime = eventTime.slice(0, 5);
     } else if (!/^\d{2}:\d{2}$/.test(eventTime)) {
         console.error('Invalid time format:', eventTime);
         return res.status(400).json({ error: 'Invalid time format: Use HH:MM or HH:MM:SS' });
@@ -218,55 +268,6 @@ app.delete('/api/bookings/:id', async (req, res) => {
     } catch (err) {
         console.error('Error deleting booking:', err);
         res.status(500).json({ error: 'Error deleting booking: ' + err.message });
-    }
-});
-
-// Filter bookings
-app.get('/api/bookings/filter', async (req, res) => {
-    console.log('GET /api/bookings/filter:', req.query);
-    const { date, month, year, branch } = req.query;
-
-    let query = `
-        SELECT id, uniqueId, customerName, contactNumber, 
-               DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
-               TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
-               branch, selectedPackage, amount 
-        FROM bookings 
-        WHERE 1=1
-    `;
-    const params = [];
-
-    if (date) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-            console.error('Invalid date format:', date);
-            return res.status(400).json({ error: 'Invalid date format: Use YYYY-MM-DD' });
-        }
-        query += ' AND eventDate = ?';
-        params.push(date);
-    } else if (month && year) {
-        const monthNum = parseInt(month);
-        const yearNum = parseInt(year);
-        if (isNaN(monthNum) || monthNum < 1 || monthNum > 12 || isNaN(yearNum) || yearNum < 1000) {
-            console.error('Invalid month/year:', { month, year });
-            return res.status(400).json({ error: 'Invalid month or year' });
-        }
-        query += ' AND MONTH(eventDate) = ? AND YEAR(eventDate) = ?';
-        params.push(monthNum, yearNum);
-    }
-    if (branch && branch !== 'All') {
-        query += ' AND branch = ?';
-        params.push(branch);
-    }
-
-    console.log('Executing filter query:', query, 'Params:', params);
-
-    try {
-        const results = await queryWithRetry(query, params);
-        console.log('Filtered bookings fetched:', results.length);
-        res.status(200).json(results);
-    } catch (err) {
-        console.error('Error fetching filtered bookings:', err);
-        res.status(500).json({ error: 'Error fetching filtered bookings: ' + err.message });
     }
 });
 
@@ -315,7 +316,7 @@ app.get('/api/notifications', async (req, res) => {
 
 // Catch-all
 app.use((req, res) => {
-    console.error(`Invalid route: ${req.method} ${req.url}`);
+    console.error(`Invalid route accessed: ${req.method} ${req.url}`);
     res.status(404).json({ error: `Route not found: ${req.method} ${req.url}` });
 });
 
