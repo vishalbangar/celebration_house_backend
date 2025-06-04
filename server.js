@@ -19,7 +19,7 @@ const pool = mysql.createPool({
     database: process.env.DB_NAME,
     port: process.env.DB_PORT || 3306,
     waitForConnections: true,
-    connectionLimit: 4,
+    connectionLimit: 2,
     queueLimit: 0,
     connectTimeout: 20000,
     idleTimeout: 60000
@@ -51,6 +51,11 @@ async function queryWithRetry(sql, params, retries = 3) {
     }
     return sql.toLowerCase().includes('select') ? [] : { affectedRows: 0 };
 }
+
+// Health check route
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', message: 'Server is healthy' });
+});
 
 // Test route
 app.get('/api/test', (req, res) => {
@@ -294,6 +299,11 @@ app.get('/api/notifications', async (req, res) => {
     }
 });
 
+// Health check route
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', message: 'Server is healthy' });
+});
+
 // Catch-all for invalid routes
 app.use((req, res) => {
     console.error(`Invalid route accessed: ${req.method} ${req.url}`);
@@ -311,7 +321,7 @@ setInterval(async () => {
 }, 300000);
 
 // Start server
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
