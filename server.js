@@ -7,7 +7,7 @@ dotenv.config();
 
 const app = express();
 
-// CORS
+// Middleware
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
@@ -28,18 +28,10 @@ const pool = mysql.createPool({
 // Test connection
 pool.getConnection()
     .then(conn => {
-        console.log('MySQL connected');
+        console.log('MySQL connected successfully');
         conn.release();
     })
     .catch(err => console.error('MySQL connection error:', err));
-
-// Pool errors
-pool.on('error', err => {
-    console.error('Pool error:', err);
-    if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-        console.log('Reconnecting...');
-    }
-});
 
 // Query with retry
 async function queryWithRetry(sql, params, retries = 3) {
@@ -66,19 +58,7 @@ app.get('/api/test', (req, res) => {
     res.status(200).json({ message: 'Server running', timestamp: new Date().toISOString() });
 });
 
-// Health check
-app.get('/health', (req, res) => {
-    console.log('Health check');
-    res.status(200).json({ status: 'OK', uptime: process.uptime() });
-});
-
-// Root
-app.get('/', (req, res) => {
-    console.log('Root accessed');
-    res.status(200).json({ message: 'Celebration House API' });
-});
-
-// Filter bookings (MUST be before /api/bookings/:id)
+// Filter bookings
 app.get('/api/bookings/filter', async (req, res) => {
     console.log('GET /api/bookings/filter with query:', req.query);
     const { date, month, year, branch } = req.query;
@@ -87,7 +67,7 @@ app.get('/api/bookings/filter', async (req, res) => {
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
                TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
-               branch, selectedPackage, amount 
+               branch, selectedPackage, amount, celebrationType 
         FROM bookings 
         WHERE 1=1
     `;
@@ -138,7 +118,7 @@ app.get('/api/bookings', async (req, res) => {
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
                TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
-               branch, selectedPackage, amount 
+               branch, selectedPackage, amount, celebrationType 
         FROM bookings
     `;
     try {
@@ -159,7 +139,7 @@ app.get('/api/bookings/:id', async (req, res) => {
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
                TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
-               branch, selectedPackage, amount 
+               branch, selectedPackage, amount, celebrationType 
         FROM bookings 
         WHERE id = ?
     `;
@@ -180,17 +160,17 @@ app.get('/api/bookings/:id', async (req, res) => {
 // Create booking
 app.post('/api/bookings', async (req, res) => {
     console.log('POST /api/bookings:', req.body);
-    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount } = req.body;
-    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount) {
+    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, celebrationType } = req.body;
+    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount || !celebrationType) {
         console.error('Missing fields:', req.body);
         return res.status(400).json({ error: 'All fields required' });
     }
     const query = `
-        INSERT INTO bookings (customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO bookings (customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, celebrationType)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
     try {
-        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount]);
+        const result = await queryWithRetry(query, [customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, celebrationType]);
         const bookingId = String(result.insertId).padStart(5, '0');
         await queryWithRetry('UPDATE bookings SET uniqueId = ? WHERE id = ?', [bookingId, result.insertId]);
         console.log('Booking created:', bookingId);
@@ -204,10 +184,10 @@ app.post('/api/bookings', async (req, res) => {
 // Update booking
 app.put('/api/bookings/:id', async (req, res) => {
     const { id } = req.params;
-    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount } = req.body;
+    const { customerName, contactNumber, eventDate, eventTime, branch, selectedPackage, amount, celebrationType } = req.body;
     console.log(`PUT /api/bookings/${id}:`, req.body);
 
-    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount) {
+    if (!customerName || !contactNumber || !eventDate || !eventTime || !branch || !selectedPackage || !amount || !celebrationType) {
         console.error('Missing fields:', req.body);
         return res.status(400).json({ error: 'All fields required' });
     }
@@ -233,12 +213,12 @@ app.put('/api/bookings/:id', async (req, res) => {
     const query = `
         UPDATE bookings 
         SET customerName = ?, contactNumber = ?, eventDate = ?, eventTime = ?, 
-            branch = ?, selectedPackage = ?, amount = ?
+            branch = ?, selectedPackage = ?, amount = ?, celebrationType = ?
         WHERE id = ?
     `;
     try {
         const result = await queryWithRetry(query, [
-            customerName, contactNumber, eventDate, normalizedTime, branch, selectedPackage, amount, id
+            customerName, contactNumber, eventDate, normalizedTime, branch, selectedPackage, amount, celebrationType, id
         ]);
         if (!result || result.affectedRows === 0) {
             console.error('Booking not found:', id);
@@ -296,7 +276,7 @@ app.get('/api/notifications', async (req, res) => {
         SELECT id, uniqueId, customerName, contactNumber, 
                DATE_FORMAT(eventDate, '%d-%m-%Y') AS eventDate, 
                TIME_FORMAT(eventTime, '%H:%i') AS eventTime, 
-               branch, selectedPackage, amount 
+               branch, selectedPackage, amount, celebrationType 
         FROM bookings 
         WHERE eventDate = ?
         ORDER BY eventTime ASC
@@ -314,7 +294,7 @@ app.get('/api/notifications', async (req, res) => {
     }
 });
 
-// Catch-all
+// Catch-all for invalid routes
 app.use((req, res) => {
     console.error(`Invalid route accessed: ${req.method} ${req.url}`);
     res.status(404).json({ error: `Route not found: ${req.method} ${req.url}` });
@@ -330,34 +310,8 @@ setInterval(async () => {
     }
 }, 300000);
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received. Shutting down...');
-    const server = app.get('server');
-    if (server) {
-        server.close(() => {
-            console.log('Server closed');
-            pool.end(err => {
-                if (err) console.error('Pool close error:', err);
-                console.log('Pool closed');
-                process.exit(0);
-            });
-        });
-    } else {
-        pool.end(err => {
-            if (err) console.error('Pool close error:', err);
-            console.log('Pool closed');
-            process.exit(0);
-        });
-    }
-    setTimeout(() => {
-        console.error('Force shutdown');
-        process.exit(1);
-    }, 10000);
-});
-
+// Start server
 const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => {
+app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
-app.set('server', server);
